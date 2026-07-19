@@ -1,9 +1,0 @@
-{
-    "autoDocstring.docstringFormat": "google",
-    "autoDocstring.generateDocstringOnEnter": true,
-    "autoDocstring.guessTypes": true,
-    "autoDocstring.includeExtendedSummary": false,
-    "autoDocstring.includeName": false,
-    "autoDocstring.quoteStyle": "\"\"\"",
-    "autoDocstring.startOnNewLine": false
-}
