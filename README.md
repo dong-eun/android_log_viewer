@@ -66,6 +66,12 @@ pyinstaller --clean --noconfirm android_log_viewer.spec
 
 ADB는 앱에 포함하지 않습니다. 각 사용자의 Android SDK Platform-Tools를 사용하므로 최신 버전을 별도로 설치해야 합니다.
 
+### GitHub Actions에서 Windows 배포 파일 만들기
+
+GitHub 저장소의 **Actions > Build Windows executable > Run workflow**에서 수동으로 실행할 수 있습니다. `v`로 시작하는 태그(예: `v0.1.0`)를 푸시해도 자동으로 실행됩니다.
+
+빌드가 완료되면 workflow 실행 화면의 **Artifacts**에서 `AndroidLogViewer-windows-x64`를 내려받습니다. 아티팩트 안의 `AndroidLogViewer-windows-x64.zip`을 압축 해제한 뒤 `AndroidLogViewer/AndroidLogViewer.exe`를 실행합니다. 같은 폴더의 DLL과 Qt 파일이 필요하므로 EXE만 따로 이동하지 마세요.
+
 ## 사용 방법
 
 1. Android 기기를 USB로 연결하고 **새로고침**을 누릅니다.
