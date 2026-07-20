@@ -12,6 +12,34 @@ LOGCAT_PATTERN = re.compile(
     r"(?P<level>[VDIWEFA])\s+"
     r"(?P<tag>.*?):\s(?P<message>.*)$"
 )
+LEVEL_RANKS = {"V": 0, "D": 1, "I": 2, "W": 3, "E": 4, "F": 5, "A": 5, "?": 0}
+
+
+@dataclass(frozen=True, slots=True)
+class LogFilter:
+    """반복 파싱 없이 재사용할 수 있는 로그 필터 조건을 보관한다."""
+
+    terms: tuple[str, ...] = ()
+    minimum_level: str = "V"
+    package_pids: frozenset[str] | None = None
+
+    def matches(self, entry: LogEntry) -> bool:
+        """캐시된 레벨, 패키지 PID와 AND 검색어를 로그에 적용한다.
+
+        Args:
+            entry (LogEntry): 필터 적용 여부를 판정할 로그 항목.
+
+        Returns:
+            bool: 저장된 모든 조건을 만족하면 ``True``.
+        """
+        if LEVEL_RANKS.get(entry.level, 0) < LEVEL_RANKS.get(self.minimum_level, 0):
+            return False
+        if self.package_pids is not None and (not entry.pid or entry.pid not in self.package_pids):
+            return False
+        if not self.terms:
+            return True
+        raw = entry.raw.casefold()
+        return all(term in raw for term in self.terms)
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,13 +62,11 @@ class LogEntry:
         Returns:
             bool: 레벨과 모든 검색어 조건을 만족하면 ``True``.
         """
-        ranks = {"V": 0, "D": 1, "I": 2, "W": 3, "E": 4, "F": 5, "A": 5, "?": 0}
-        if ranks.get(self.level, 0) < ranks.get(minimum_level, 0):
-            return False
-        if not query:
-            return True
-        raw = self.raw.casefold()
-        return all(term.casefold() in raw for term in parse_search_terms(query))
+        log_filter = LogFilter(
+            terms=tuple(term.casefold() for term in parse_search_terms(query)),
+            minimum_level=minimum_level,
+        )
+        return log_filter.matches(self)
 
 
 def parse_search_terms(query: str) -> list[str]:

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import datetime
-from itertools import islice
 from pathlib import Path
 import re
 import time
+from typing import Callable
 
 from PySide6.QtCore import QProcess, QStringListModel, QThreadPool, QTimer, Qt
 from PySide6.QtGui import QColor, QCloseEvent, QFontDatabase, QTextCharFormat, QTextCursor
@@ -36,7 +36,7 @@ from .adb import (
     parse_processes,
     safe_filename,
 )
-from .log_parser import LogEntry, parse_logcat_line
+from .log_parser import LogEntry, LogFilter, parse_logcat_line, parse_search_terms
 from .workers import AdbFileCommand, AdbTextCommand
 
 
@@ -50,7 +50,10 @@ LEVEL_COLORS = {
     "A": "#FB7185",
     "?": "#D1D5DB",
 }
-MAX_LOG_LINES = 10_000
+DEFAULT_MAX_LOG_LINES = 5_000
+MAX_LOG_LINE_OPTIONS = (1_000, 5_000, 10_000, 20_000)
+DISPLAY_BATCH_SIZE = 250
+DISPLAY_BATCH_INTERVAL_MS = 50
 PACKAGE_FILTER = re.compile(r"(?:^|\s)package:(?P<name>[0-9A-Za-z._-]*)", re.IGNORECASE)
 
 
@@ -64,17 +67,22 @@ class MainWindow(QMainWindow):
         self.resize(1280, 800)
         self._adb_path: str | None = None
         self._devices: list[AndroidDevice] = []
-        self._logs: deque[LogEntry] = deque(maxlen=MAX_LOG_LINES)
-        self._hidden_log_count = 0
+        self._max_log_lines = DEFAULT_MAX_LOG_LINES
+        self._logs: deque[LogEntry] = deque(maxlen=self._max_log_lines)
+        self._pending_display: deque[LogEntry] = deque(maxlen=self._max_log_lines)
         self._visible_count = 0
         self._session_serial = ""
         self._packages: list[str] = []
         self._package_pids: dict[str, set[str]] = {}
+        self._cached_filter = LogFilter()
+        self._filter_render_pending = False
         self._read_buffer = ""
         self._follow_tail = True
         self._scroll_update_guard = False
         self._thread_pool = QThreadPool.globalInstance()
-        self._active_workers: set[AdbFileCommand] = set()
+        self._active_workers: set[AdbFileCommand | AdbTextCommand] = set()
+        self._process_query_in_flight = False
+        self._process_query_serial = ""
 
         self._log_process = QProcess(self)
         self._log_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
@@ -86,6 +94,10 @@ class MainWindow(QMainWindow):
         self._filter_timer.setSingleShot(True)
         self._filter_timer.setInterval(180)
         self._filter_timer.timeout.connect(self._render_all_logs)
+        self._display_timer = QTimer(self)
+        self._display_timer.setSingleShot(True)
+        self._display_timer.setInterval(DISPLAY_BATCH_INTERVAL_MS)
+        self._display_timer.timeout.connect(self._flush_display_batch)
         self._process_refresh_timer = QTimer(self)
         self._process_refresh_timer.setInterval(3000)
         self._process_refresh_timer.timeout.connect(self._load_process_metadata)
@@ -114,7 +126,7 @@ class MainWindow(QMainWindow):
         self.stream_button.clicked.connect(self._toggle_logcat)
         device_row.addWidget(self.stream_button)
         self.clear_button = QPushButton("화면 로그 지우기")
-        self.clear_button.setToolTip("화면에 표시된 로그만 지웁니다. 기기 로그와 저장 대상은 유지됩니다.")
+        self.clear_button.setToolTip("화면과 앱의 로그 메모리만 비웁니다. 기기의 실제 로그는 유지됩니다.")
         self.clear_button.clicked.connect(self.clear_screen)
         device_row.addWidget(self.clear_button)
         layout.addLayout(device_row)
@@ -138,14 +150,22 @@ class MainWindow(QMainWindow):
         self.level_combo = QComboBox()
         for label, value in (("Verbose+", "V"), ("Debug+", "D"), ("Info+", "I"), ("Warn+", "W"), ("Error+", "E")):
             self.level_combo.addItem(label, value)
-        self.level_combo.currentIndexChanged.connect(self._render_all_logs)
+        self.level_combo.currentIndexChanged.connect(self._filter_option_changed)
         filter_row.addWidget(self.level_combo)
+        filter_row.addWidget(QLabel("최대 로그"))
+        self.max_lines_combo = QComboBox()
+        for line_count in MAX_LOG_LINE_OPTIONS:
+            self.max_lines_combo.addItem(f"{line_count:,}줄", line_count)
+        self.max_lines_combo.setCurrentIndex(MAX_LOG_LINE_OPTIONS.index(DEFAULT_MAX_LOG_LINES))
+        self.max_lines_combo.currentIndexChanged.connect(self._max_log_lines_changed)
+        self.max_lines_combo.setToolTip("앱 메모리와 화면에 유지할 최대 로그 줄 수입니다.")
+        filter_row.addWidget(self.max_lines_combo)
         layout.addLayout(filter_row)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.log_view.setMaximumBlockCount(MAX_LOG_LINES)
+        self.log_view.setMaximumBlockCount(self._max_log_lines)
         fixed_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         fixed_font.setPointSize(11)
         self.log_view.setFont(fixed_font)
@@ -302,45 +322,67 @@ class MainWindow(QMainWindow):
         self._update_controls()
 
     def _read_log_output(self) -> None:
-        """logcat 출력 조각을 완전한 줄로 조립해 저장·필터링·화면 출력을 수행한다."""
+        """logcat 출력 조각을 줄 단위로 저장하고 화면 출력 대기열에 추가한다."""
         chunk = bytes(self._log_process.readAllStandardOutput()).decode("utf-8", errors="replace")
         self._read_buffer += chunk
         lines = self._read_buffer.split("\n")
         self._read_buffer = lines.pop()
-        follow_tail = self._follow_tail
-        self._scroll_update_guard = True
-        try:
-            for line in lines:
-                entry = parse_logcat_line(line.rstrip("\r"))
-                if len(self._logs) == self._logs.maxlen:
-                    if self._hidden_log_count:
-                        self._hidden_log_count -= 1
-                    elif self._matches_filter(self._logs[0]):
-                        self._visible_count -= 1
-                self._logs.append(entry)
-                if self._matches_filter(entry):
-                    self._visible_count += 1
-                    self._append_entry(entry, auto_scroll=False)
-        finally:
-            self._scroll_update_guard = False
-        if lines and follow_tail:
-            self._scroll_to_bottom()
+        for line in lines:
+            entry = parse_logcat_line(line.rstrip("\r"))
+            if (
+                not self._filter_render_pending
+                and len(self._logs) == self._logs.maxlen
+                and self._matches_filter(self._logs[0])
+            ):
+                self._visible_count -= 1
+            self._logs.append(entry)
+            if not self._filter_render_pending and self._matches_filter(entry):
+                self._visible_count += 1
+                self._pending_display.append(entry)
+        if self._pending_display and not self._display_timer.isActive():
+            self._display_timer.start()
         self._update_count()
 
-    def _append_entry(self, entry: LogEntry, auto_scroll: bool = True) -> None:
-        """로그 레벨 색상으로 한 줄을 문서 끝에 추가한다.
+    def _append_entries(self, entries: list[LogEntry]) -> None:
+        """여러 로그를 하나의 화면 갱신 단위로 문서 끝에 추가한다.
 
         Args:
-            entry (LogEntry): 화면에 추가할 로그 항목.
-            auto_scroll (bool, optional): 추가 후 최하단으로 이동할지 여부. 기본값은 ``True``이다.
+            entries (list[LogEntry]): 수신 순서대로 화면에 추가할 로그 항목 목록.
         """
+        if not entries:
+            return
+        scrollbar = self.log_view.verticalScrollBar()
+        old_value = scrollbar.value()
+        follow_tail = self._follow_tail
         cursor = QTextCursor(self.log_view.document())
         cursor.movePosition(QTextCursor.MoveOperation.End)
-        text_format = QTextCharFormat()
-        text_format.setForeground(QColor(LEVEL_COLORS.get(entry.level, LEVEL_COLORS["?"])))
-        cursor.insertText(entry.raw + "\n", text_format)
-        if auto_scroll:
-            self._scroll_to_bottom()
+        formats: dict[str, QTextCharFormat] = {}
+        self._scroll_update_guard = True
+        self.log_view.setUpdatesEnabled(False)
+        try:
+            for entry in entries:
+                if entry.level not in formats:
+                    text_format = QTextCharFormat()
+                    text_format.setForeground(QColor(LEVEL_COLORS.get(entry.level, LEVEL_COLORS["?"])))
+                    formats[entry.level] = text_format
+                cursor.insertText(entry.raw + "\n", formats[entry.level])
+            if follow_tail:
+                scrollbar.setValue(scrollbar.maximum())
+            else:
+                scrollbar.setValue(min(old_value, scrollbar.maximum()))
+        finally:
+            self.log_view.setUpdatesEnabled(True)
+            self._scroll_update_guard = False
+        self._follow_tail = follow_tail
+
+    def _flush_display_batch(self) -> None:
+        """대기 중인 로그를 제한된 개수만 꺼내 한 번에 화면에 출력한다."""
+        entries: list[LogEntry] = []
+        for _ in range(min(DISPLAY_BATCH_SIZE, len(self._pending_display))):
+            entries.append(self._pending_display.popleft())
+        self._append_entries(entries)
+        if self._pending_display:
+            self._display_timer.start()
 
     def _scroll_value_changed(self, value: int) -> None:
         """사용자 스크롤 위치에 따라 자동 로그 추적 상태를 갱신한다.
@@ -353,18 +395,8 @@ class MainWindow(QMainWindow):
         scrollbar = self.log_view.verticalScrollBar()
         self._follow_tail = value >= scrollbar.maximum() - 1
 
-    def _scroll_to_bottom(self) -> None:
-        """내부 스크롤 이벤트를 구분하면서 로그 화면을 최하단으로 이동한다."""
-        scrollbar = self.log_view.verticalScrollBar()
-        self._scroll_update_guard = True
-        try:
-            scrollbar.setValue(scrollbar.maximum())
-        finally:
-            self._scroll_update_guard = False
-        self._follow_tail = True
-
     def _matches_filter(self, entry: LogEntry) -> bool:
-        """패키지 PID, 최소 레벨 및 AND 검색어 조건을 로그 한 줄에 적용한다.
+        """미리 계산한 필터 조건을 로그 한 줄에 적용한다.
 
         Args:
             entry (LogEntry): 필터 적용 여부를 판정할 로그 항목.
@@ -372,21 +404,32 @@ class MainWindow(QMainWindow):
         Returns:
             bool: 현재 UI 필터 조건을 모두 만족하면 ``True``.
         """
+        return self._cached_filter.matches(entry)
+
+    def _cache_filter(self) -> None:
+        """UI의 필터 문자열과 패키지 PID를 반복 사용 가능한 조건으로 변환한다."""
         query = self.filter_input.text().strip()
         package_match = PACKAGE_FILTER.search(query)
+        package_pids: frozenset[str] | None = None
         if package_match:
             package_prefix = package_match.group("name").casefold()
             matching_pids: set[str] = set()
             for package, pids in self._package_pids.items():
                 if package.casefold().startswith(package_prefix):
                     matching_pids.update(pids)
-            if not entry.pid or entry.pid not in matching_pids:
-                return False
+            package_pids = frozenset(matching_pids)
             query = (query[: package_match.start()] + query[package_match.end() :]).strip()
-        return entry.matches(query, str(self.level_combo.currentData() or "V"))
+        self._cached_filter = LogFilter(
+            terms=tuple(term.casefold() for term in parse_search_terms(query)),
+            minimum_level=str(self.level_combo.currentData() or "V"),
+            package_pids=package_pids,
+        )
 
     def _render_all_logs(self) -> None:
         """현재 필터로 보존 중인 로그를 다시 그리며 사용자의 스크롤 상태를 유지한다."""
+        self._filter_render_pending = False
+        self._display_timer.stop()
+        self._pending_display.clear()
         scrollbar = self.log_view.verticalScrollBar()
         old_value = scrollbar.value()
         follow_tail = self._follow_tail
@@ -394,11 +437,9 @@ class MainWindow(QMainWindow):
         self.log_view.setUpdatesEnabled(False)
         try:
             self.log_view.clear()
-            self._visible_count = 0
-            for entry in islice(self._logs, self._hidden_log_count, None):
-                if self._matches_filter(entry):
-                    self._visible_count += 1
-                    self._append_entry(entry, auto_scroll=False)
+            entries = [entry for entry in self._logs if self._matches_filter(entry)]
+            self._visible_count = len(entries)
+            self._append_entries(entries)
             if follow_tail:
                 scrollbar.setValue(scrollbar.maximum())
             else:
@@ -410,8 +451,10 @@ class MainWindow(QMainWindow):
         self._update_count()
 
     def clear_screen(self) -> None:
-        """표시된 로그만 지우고 수집된 로그는 저장할 수 있도록 유지한다."""
-        self._hidden_log_count = len(self._logs)
+        """앱이 수집한 화면용 로그와 출력 대기열을 비워 메모리를 해제한다."""
+        self._display_timer.stop()
+        self._pending_display.clear()
+        self._logs.clear()
         self._visible_count = 0
         self._scroll_update_guard = True
         try:
@@ -420,12 +463,13 @@ class MainWindow(QMainWindow):
             self._scroll_update_guard = False
         self._follow_tail = True
         self._update_count()
-        self.statusBar().showMessage("화면을 지웠습니다. 수신 로그와 기기 로그는 삭제되지 않았습니다.", 5000)
+        self.statusBar().showMessage("화면과 앱 메모리를 비웠습니다. 기기 로그는 삭제되지 않았습니다.", 5000)
 
     def _reset_logs(self) -> None:
         """기기를 변경할 때 새로운 메모리 로그 세션을 시작한다."""
+        self._display_timer.stop()
+        self._pending_display.clear()
         self._logs.clear()
-        self._hidden_log_count = 0
         self._visible_count = 0
         self._scroll_update_guard = True
         try:
@@ -441,18 +485,43 @@ class MainWindow(QMainWindow):
         Args:
             text (str): 필터 입력창의 최신 문자열.
         """
-        self._filter_timer.start()
+        self._prepare_filter_render()
         if text.casefold().startswith("package:") and " " not in text:
             self._package_completer.setCompletionPrefix(text)
             self._package_completer.complete()
         else:
             self._package_completer.popup().hide()
 
+    def _filter_option_changed(self) -> None:
+        """로그 레벨 선택이 바뀌면 캐시를 갱신하고 전체 로그를 다시 그린다."""
+        self._prepare_filter_render()
+
+    def _prepare_filter_render(self) -> None:
+        """필터 변경 중 이전 조건의 출력이 섞이지 않도록 대기열을 초기화한다."""
+        self._cache_filter()
+        self._filter_render_pending = True
+        self._display_timer.stop()
+        self._pending_display.clear()
+        self._filter_timer.start()
+
+    def _max_log_lines_changed(self) -> None:
+        """선택한 최대 줄 수에 맞춰 로그 저장소와 Qt 문서 제한을 즉시 조정한다."""
+        maximum = int(self.max_lines_combo.currentData() or DEFAULT_MAX_LOG_LINES)
+        if maximum == self._max_log_lines:
+            return
+        self._max_log_lines = maximum
+        self._logs = deque(self._logs, maxlen=maximum)
+        self._pending_display = deque(maxlen=maximum)
+        self.log_view.setMaximumBlockCount(maximum)
+        self._render_all_logs()
+        self.statusBar().showMessage(f"최대 로그를 {maximum:,}줄로 변경했습니다.", 4000)
+
     def _load_device_metadata(self) -> None:
         """선택 기기의 설치 패키지와 실행 프로세스 정보를 비동기로 요청한다."""
         device = self._selected_device()
         self._packages = []
         self._package_pids = {}
+        self._cache_filter()
         self._package_model.setStringList([])
         if not self._adb_path or not device or device.state != "device":
             return
@@ -468,37 +537,89 @@ class MainWindow(QMainWindow):
         device = self._selected_device()
         if not self._adb_path or not device or device.state != "device":
             return
+        if self._process_query_in_flight:
+            return
         serial = device.serial
+        self._process_query_in_flight = True
+        self._process_query_serial = serial
         self._run_text_query(
             [self._adb_path, "-s", serial, "shell", "ps", "-A"],
             lambda output: self._processes_loaded(serial, output),
+            lambda: self._process_query_finished(serial),
         )
 
-    def _run_text_query(self, command: list[str], on_complete) -> None:
+    def _run_text_query(
+        self,
+        command: list[str],
+        on_complete: Callable[[str], None],
+        on_finished: Callable[[], None] | None = None,
+    ) -> None:
         """짧은 ADB 조회를 스레드 풀에 등록한다.
 
         Args:
             command (list[str]): 실행 파일을 포함한 전체 ADB 명령.
-            on_complete: 표준 출력 문자열을 전달받을 완료 콜백.
+            on_complete (Callable[[str], None]): 표준 출력을 전달받을 완료 콜백.
+            on_finished (Callable[[], None] | None, optional): 성공 여부와 무관하게 실행할 정리 콜백.
         """
         worker = AdbTextCommand(command)
         self._active_workers.add(worker)
         worker.signals.completed.connect(
-            lambda output, item=worker: self._text_query_finished(item, on_complete, output)
+            lambda output, item=worker: self._text_query_finished(item, on_complete, on_finished, output)
         )
-        worker.signals.failed.connect(lambda _error, item=worker: self._active_workers.discard(item))
+        worker.signals.failed.connect(
+            lambda _error, item=worker: self._text_query_failed(item, on_finished)
+        )
         self._thread_pool.start(worker)
 
-    def _text_query_finished(self, worker: AdbTextCommand, callback, output: str) -> None:
+    def _text_query_finished(
+        self,
+        worker: AdbTextCommand,
+        callback: Callable[[str], None],
+        on_finished: Callable[[], None] | None,
+        output: str,
+    ) -> None:
         """완료된 문자열 작업을 정리하고 결과 콜백을 실행한다.
 
         Args:
             worker (AdbTextCommand): 완료되어 참조를 해제할 작업 객체.
-            callback: 명령 결과를 처리할 요청별 콜백.
+            callback (Callable[[str], None]): 명령 결과를 처리할 요청별 콜백.
+            on_finished (Callable[[], None] | None): 작업 상태를 정리할 선택 콜백.
             output (str): ADB 명령의 표준 출력.
         """
         self._active_workers.discard(worker)
-        callback(output)
+        try:
+            callback(output)
+        finally:
+            if on_finished:
+                on_finished()
+
+    def _text_query_failed(
+        self,
+        worker: AdbTextCommand,
+        on_finished: Callable[[], None] | None,
+    ) -> None:
+        """실패한 문자열 조회 참조와 요청별 실행 상태를 정리한다.
+
+        Args:
+            worker (AdbTextCommand): 실패하여 참조를 해제할 작업 객체.
+            on_finished (Callable[[], None] | None): 작업 상태를 정리할 선택 콜백.
+        """
+        self._active_workers.discard(worker)
+        if on_finished:
+            on_finished()
+
+    def _process_query_finished(self, serial: str) -> None:
+        """프로세스 조회 잠금을 해제하고 기기가 바뀌었다면 새 조회를 시작한다.
+
+        Args:
+            serial (str): 완료된 프로세스 조회의 기기 시리얼.
+        """
+        if serial != self._process_query_serial:
+            return
+        self._process_query_in_flight = False
+        self._process_query_serial = ""
+        if serial != self._selected_serial():
+            QTimer.singleShot(0, self._load_process_metadata)
 
     def _packages_loaded(self, serial: str, output: str) -> None:
         """현재 기기의 패키지 조회 결과만 자동완성 모델에 반영한다.
@@ -522,6 +643,7 @@ class MainWindow(QMainWindow):
         if serial != self._selected_serial():
             return
         self._package_pids = parse_processes(output)
+        self._cache_filter()
         if "package:" in self.filter_input.text().casefold():
             self._render_all_logs()
 
@@ -645,5 +767,6 @@ class MainWindow(QMainWindow):
         Args:
             event (QCloseEvent): Qt가 전달한 창 닫기 이벤트.
         """
+        self._display_timer.stop()
         self._stop_logcat()
         event.accept()
