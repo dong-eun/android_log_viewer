@@ -1,5 +1,6 @@
 from android_log_viewer.adb import (
     build_logcat_arguments,
+    build_logcat_dump_arguments,
     parse_devices,
     parse_packages,
     parse_processes,
@@ -58,3 +59,12 @@ def test_build_logcat_arguments_reads_only_from_start_without_clearing() -> None
         "1721276800.125",
     ]
     assert "-c" not in arguments
+
+
+def test_build_logcat_dump_arguments_reads_all_buffers_without_clearing() -> None:
+    """전체 로그 저장 인수가 모든 버퍼를 읽고 기기 로그는 삭제하지 않는지 검증한다."""
+    arguments = build_logcat_dump_arguments()
+
+    assert arguments == ["logcat", "-b", "all", "-d", "-v", "threadtime"]
+    assert "-c" not in arguments
+    assert "-T" not in arguments
