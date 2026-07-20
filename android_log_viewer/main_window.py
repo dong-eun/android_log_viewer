@@ -5,6 +5,7 @@ from datetime import datetime
 from itertools import islice
 from pathlib import Path
 import re
+import time
 
 from PySide6.QtCore import QProcess, QStringListModel, QThreadPool, QTimer, Qt
 from PySide6.QtGui import QColor, QCloseEvent, QFontDatabase, QTextCharFormat, QTextCursor
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 from .adb import (
     AdbError,
     AndroidDevice,
+    build_logcat_arguments,
     find_adb,
     list_devices,
     parse_packages,
@@ -47,7 +49,7 @@ LEVEL_COLORS = {
     "A": "#FB7185",
     "?": "#D1D5DB",
 }
-MAX_LOG_LINES = 50_000
+MAX_LOG_LINES = 10_000
 PACKAGE_FILTER = re.compile(r"(?:^|\s)package:(?P<name>[0-9A-Za-z._-]*)", re.IGNORECASE)
 
 
@@ -264,15 +266,20 @@ class MainWindow(QMainWindow):
             self._stop_logcat()
 
     def _start_logcat(self) -> None:
-        """선택 기기에 threadtime 형식의 logcat 프로세스를 시작한다."""
+        """선택 기기에 현재 시점 이후의 logcat 수신을 시작한다.
+
+        앱의 이전 수신 로그만 초기화하며 Android 기기의 logcat 버퍼는
+        삭제하지 않는다.
+        """
         device = self._selected_device()
         if not self._adb_path or not device or device.state != "device":
             QMessageBox.information(self, "기기 선택", "사용 가능한 Android 기기를 선택해 주세요.")
             return
+        self._reset_logs()
         self._read_buffer = ""
         self._load_device_metadata()
         self._log_process.setProgram(self._adb_path)
-        self._log_process.setArguments(["-s", device.serial, "logcat", "-v", "threadtime"])
+        self._log_process.setArguments(build_logcat_arguments(device.serial, time.time()))
         self._log_process.start()
         if not self._log_process.waitForStarted(2000):
             QMessageBox.warning(self, "Logcat 오류", "logcat 프로세스를 시작하지 못했습니다.")
