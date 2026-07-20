@@ -218,3 +218,15 @@ def build_logcat_arguments(serial: str, start_timestamp: float) -> list[str]:
         "-T",
         f"{start_timestamp:.3f}",
     ]
+
+
+def build_logcat_dump_arguments() -> list[str]:
+    """기기의 접근 가능한 모든 logcat 버퍼를 파일로 덤프할 인수를 구성한다.
+
+    ``-d``는 현재 버퍼를 출력한 후 종료하며, 버퍼를 삭제하는 ``-c``는
+    사용하지 않는다.
+
+    Returns:
+        list[str]: 기기 선택 인수 뒤에 전달할 logcat 명령 인수 목록.
+    """
+    return ["logcat", "-b", "all", "-d", "-v", "threadtime"]

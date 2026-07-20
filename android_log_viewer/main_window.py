@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from .adb import (
     AdbError,
     AndroidDevice,
+    build_logcat_dump_arguments,
     build_logcat_arguments,
     find_adb,
     list_devices,
@@ -152,7 +153,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.log_view, 1)
 
         action_row = QHBoxLayout()
-        self.save_button = QPushButton("현재 로그 저장")
+        self.save_button = QPushButton("기기 전체 로그 저장")
         self.save_button.clicked.connect(self.save_logs)
         action_row.addWidget(self.save_button)
         self.dumpsys_button = QPushButton("dumpsys 저장")
@@ -525,9 +526,8 @@ class MainWindow(QMainWindow):
             self._render_all_logs()
 
     def _update_count(self) -> None:
-        """표시 로그 수와 전체 수집 로그 수를 갱신하고 저장 버튼 상태를 맞춘다."""
+        """화면에 표시된 로그 수와 앱이 수집한 전체 로그 수를 갱신한다."""
         self.count_label.setText(f"{self._visible_count:,} / {len(self._logs):,} lines")
-        self.save_button.setEnabled(bool(self._logs))
 
     def _default_name(self, extension: str) -> str:
         """현재 시각과 기기 모델을 조합해 기본 파일명을 만든다.
@@ -543,19 +543,15 @@ class MainWindow(QMainWindow):
         return f"{datetime.now():%Y%m%d%H%M}_{name}.{extension}"
 
     def save_logs(self) -> None:
-        """필터 및 화면 지우기와 관계없이 수집한 전체 로그를 UTF-8 TXT로 저장한다."""
-        if not self._logs:
-            QMessageBox.information(self, "로그 저장", "저장할 로그가 없습니다.")
-            return
+        """화면 내용과 무관하게 기기의 전체 logcat 버퍼를 UTF-8 TXT로 저장한다."""
         path, _ = QFileDialog.getSaveFileName(self, "로그 저장", self._default_name("txt"), "Text files (*.txt)")
-        if not path:
-            return
-        try:
-            Path(path).write_text("\n".join(entry.raw for entry in self._logs) + "\n", encoding="utf-8")
-        except OSError as exc:
-            QMessageBox.critical(self, "저장 실패", str(exc))
-            return
-        self.statusBar().showMessage(f"로그 저장 완료: {path}", 6000)
+        if path:
+            self._run_file_command(
+                build_logcat_dump_arguments(),
+                Path(path),
+                stdout_to_file=True,
+                label="기기 전체 logcat",
+            )
 
     def save_dumpsys(self) -> None:
         """저장 경로를 선택받아 현재 기기의 전체 dumpsys 출력을 생성한다."""
@@ -641,7 +637,7 @@ class MainWindow(QMainWindow):
         self.stream_button.setText("로그 중지" if running else "로그 시작")
         self.dumpsys_button.setEnabled(ready)
         self.bugreport_button.setEnabled(ready)
-        self.save_button.setEnabled(bool(self._logs))
+        self.save_button.setEnabled(ready)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API 명명 규칙
         """자식 logcat 프로세스를 종료하고 창 닫기 이벤트를 승인한다.
