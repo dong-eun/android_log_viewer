@@ -45,7 +45,7 @@ jobs:
         run: Compress-Archive -Path "dist/AndroidLogViewer" -DestinationPath "dist/AndroidLogViewer-windows-x64.zip"
 
       - name: Upload Windows artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: AndroidLogViewer-windows-x64
           path: dist/AndroidLogViewer-windows-x64.zip
