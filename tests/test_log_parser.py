@@ -1,4 +1,4 @@
-from android_log_viewer.log_parser import parse_logcat_line, parse_search_terms
+from android_log_viewer.log_parser import LogFilter, parse_logcat_line, parse_search_terms
 
 
 def test_parse_threadtime_logcat_line() -> None:
@@ -39,3 +39,11 @@ def test_space_separated_terms_use_and_matching() -> None:
 def test_quoted_phrase_is_preserved_as_one_and_term() -> None:
     """따옴표로 감싼 공백 포함 문장이 하나의 검색 조건으로 유지되는지 검증한다."""
     assert parse_search_terms('Network "request timeout"') == ["Network", "request timeout"]
+
+
+def test_log_filter_uses_precomputed_casefolded_terms() -> None:
+    """미리 계산한 검색어가 로그마다 다시 파싱되지 않고 AND 조건으로 적용되는지 검증한다."""
+    entry = parse_logcat_line("07-18 10:44:12.123  1234  5678 E Network: Request Timeout")
+    cached_filter = LogFilter(terms=("network", "timeout"), minimum_level="W", package_pids=frozenset({"1234"}))
+
+    assert cached_filter.matches(entry)
