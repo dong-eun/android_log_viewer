@@ -1,4 +1,10 @@
-from android_log_viewer.adb import parse_devices, parse_packages, parse_processes, safe_filename
+from android_log_viewer.adb import (
+    build_logcat_arguments,
+    parse_devices,
+    parse_packages,
+    parse_processes,
+    safe_filename,
+)
 
 
 def test_parse_devices_supports_ready_and_unauthorized_devices() -> None:
@@ -36,3 +42,19 @@ u0_a123 1250 1 0 0 0 0 S com.example.app:worker
 """
 
     assert parse_processes(output) == {"com.example.app": {"1234", "1250"}}
+
+
+def test_build_logcat_arguments_reads_only_from_start_without_clearing() -> None:
+    """logcat 인수가 시작 시간은 포함하고 버퍼 삭제 옵션은 포함하지 않는지 검증한다."""
+    arguments = build_logcat_arguments("device-123", 1_721_276_800.125)
+
+    assert arguments == [
+        "-s",
+        "device-123",
+        "logcat",
+        "-v",
+        "threadtime",
+        "-T",
+        "1721276800.125",
+    ]
+    assert "-c" not in arguments

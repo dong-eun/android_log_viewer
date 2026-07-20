@@ -194,3 +194,27 @@ def safe_filename(value: str) -> str:
     """
     cleaned = _UNSAFE_FILENAME.sub("_", value).strip("._")
     return cleaned or "android_device"
+
+
+def build_logcat_arguments(serial: str, start_timestamp: float) -> list[str]:
+    """로그 시작 시점 이후의 항목만 수신하도록 logcat 인수를 구성한다.
+
+    ``-T``에는 Unix epoch 시간을 전달하므로 기기 logcat 버퍼를 삭제하는
+    ``-c`` 명령 없이 지정 시점 이후 로그만 읽을 수 있다.
+
+    Args:
+        serial (str): 로그를 수신할 기기의 ADB 시리얼.
+        start_timestamp (float): 로그 수신 시작 직전의 Unix epoch 시간.
+
+    Returns:
+        list[str]: QProcess에 전달할 ADB 명령 인수 목록.
+    """
+    return [
+        "-s",
+        serial,
+        "logcat",
+        "-v",
+        "threadtime",
+        "-T",
+        f"{start_timestamp:.3f}",
+    ]
