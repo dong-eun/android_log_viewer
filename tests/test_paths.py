@@ -16,20 +16,22 @@ def test_development_screenshot_directory_is_inside_project() -> None:
 def test_windows_screenshot_directory_is_next_to_executable(monkeypatch) -> None:
     """Windows 패키지 실행 시 EXE 옆 screenshot 디렉토리를 사용하는지 검증한다."""
     executable = "/build/AndroidLogViewer/AndroidLogViewer.exe"
+    expected_directory = Path(executable).resolve().parent
     monkeypatch.setattr(paths.sys, "frozen", True, raising=False)
     monkeypatch.setattr(paths.sys, "platform", "win32")
     monkeypatch.setattr(paths.sys, "executable", executable)
 
-    assert paths.application_directory() == Path(executable).parent
-    assert paths.screenshot_directory() == Path(executable).parent / "screenshot"
+    assert paths.application_directory() == expected_directory
+    assert paths.screenshot_directory() == expected_directory / "screenshot"
 
 
 def test_macos_screenshot_directory_is_next_to_app_bundle(monkeypatch) -> None:
     """macOS 패키지 실행 시 APP 번들 옆 screenshot 디렉토리를 사용하는지 검증한다."""
     executable = "/build/AndroidLogViewer.app/Contents/MacOS/AndroidLogViewer"
+    expected_directory = Path("/build").resolve()
     monkeypatch.setattr(paths.sys, "frozen", True, raising=False)
     monkeypatch.setattr(paths.sys, "platform", "darwin")
     monkeypatch.setattr(paths.sys, "executable", executable)
 
-    assert paths.application_directory() == Path("/build")
-    assert paths.screenshot_directory() == Path("/build/screenshot")
+    assert paths.application_directory() == expected_directory
+    assert paths.screenshot_directory() == expected_directory / "screenshot"
