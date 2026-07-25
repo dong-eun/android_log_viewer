@@ -214,12 +214,12 @@ def test_screenshot_path_uses_timestamp_and_safe_device_name(tmp_path) -> None:
     try:
         device = AndroidDevice(serial="device-1", state="device", model="Pixel 9 Pro")
         window._selected_device = lambda: device  # type: ignore[method-assign]
-        captured_at = datetime(2026, 7, 25, 14, 30)
+        captured_at = datetime(2026, 7, 25, 14, 30, 45)
 
         with patch("android_log_viewer.main_window.screenshot_directory", return_value=tmp_path / "screenshot"):
             path = window._screenshot_path(captured_at)
 
-        assert path == tmp_path / "screenshot" / "202607251430_Pixel_9_Pro.png"
+        assert path == tmp_path / "screenshot" / "20260725143045_Pixel_9_Pro.png"
     finally:
         window.close()
 
@@ -229,7 +229,7 @@ def test_capture_screen_creates_directory_and_starts_adb_file_command(tmp_path) 
     window = _create_window()
     try:
         device = AndroidDevice(serial="device-1", state="device", model="Pixel")
-        destination = tmp_path / "screenshot" / "202607251430_Pixel.png"
+        destination = tmp_path / "screenshot" / "20260725143045_Pixel.png"
         window._adb_path = "adb"
         window._selected_device = lambda: device  # type: ignore[method-assign]
 

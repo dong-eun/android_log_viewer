@@ -753,12 +753,12 @@ class MainWindow(QMainWindow):
             captured_at (datetime | None, optional): 파일명에 사용할 시각. 기본값은 현재 시각이다.
 
         Returns:
-            Path: ``screenshot/YYYYMMDDhhmm_기기명.png`` 형식의 저장 경로.
+            Path: ``screenshot/YYYYMMDDhhmmss_기기명.png`` 형식의 저장 경로.
         """
         device = self._selected_device()
         device_name = safe_filename(device.model if device else "android_device")
         timestamp = captured_at or datetime.now()
-        return screenshot_directory() / f"{timestamp:%Y%m%d%H%M}_{device_name}.png"
+        return screenshot_directory() / f"{timestamp:%Y%m%d%H%M%S}_{device_name}.png"
 
     def capture_screen(self) -> None:
         """선택 기기의 현재 화면을 실행 파일 옆 screenshot 디렉토리에 저장한다."""
