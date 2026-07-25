@@ -30,6 +30,7 @@ from .adb import (
     AndroidDevice,
     build_logcat_dump_arguments,
     build_logcat_arguments,
+    build_screenshot_arguments,
     find_adb,
     list_devices,
     parse_packages,
@@ -37,6 +38,7 @@ from .adb import (
     safe_filename,
 )
 from .log_parser import LogEntry, LogFilter, parse_logcat_line, parse_search_terms
+from .paths import screenshot_directory
 from .workers import AdbFileCommand, AdbTextCommand
 
 
@@ -84,6 +86,7 @@ class MainWindow(QMainWindow):
         self._active_workers: set[AdbFileCommand | AdbTextCommand] = set()
         self._process_query_in_flight = False
         self._process_query_serial = ""
+        self._screenshot_in_progress = False
 
         self._log_process = QProcess(self)
         self._log_process.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
@@ -191,6 +194,10 @@ class MainWindow(QMainWindow):
         self.bugreport_button = QPushButton("bugreport 저장")
         self.bugreport_button.clicked.connect(self.save_bugreport)
         action_row.addWidget(self.bugreport_button)
+        self.screenshot_button = QPushButton("화면 캡처")
+        self.screenshot_button.setToolTip("연결 기기 화면을 실행 파일 옆 screenshot 디렉토리에 저장합니다.")
+        self.screenshot_button.clicked.connect(self.capture_screen)
+        action_row.addWidget(self.screenshot_button)
         action_row.addStretch()
         self.count_label = QLabel("0 lines")
         action_row.addWidget(self.count_label)
@@ -739,6 +746,47 @@ class MainWindow(QMainWindow):
                 destination = destination.with_suffix(".zip")
             self._run_file_command(["bugreport", str(destination)], destination, stdout_to_file=False, label="bugreport")
 
+    def _screenshot_path(self, captured_at: datetime | None = None) -> Path:
+        """현재 기기와 캡처 시각으로 자동 저장할 PNG 경로를 생성한다.
+
+        Args:
+            captured_at (datetime | None, optional): 파일명에 사용할 시각. 기본값은 현재 시각이다.
+
+        Returns:
+            Path: ``screenshot/YYYYMMDDhhmmss_기기명.png`` 형식의 저장 경로.
+        """
+        device = self._selected_device()
+        device_name = safe_filename(device.model if device else "android_device")
+        timestamp = captured_at or datetime.now()
+        return screenshot_directory() / f"{timestamp:%Y%m%d%H%M%S}_{device_name}.png"
+
+    def capture_screen(self) -> None:
+        """선택 기기의 현재 화면을 실행 파일 옆 screenshot 디렉토리에 저장한다."""
+        if self._screenshot_in_progress:
+            return
+        device = self._selected_device()
+        if not self._adb_path or not device or device.state != "device":
+            QMessageBox.information(self, "기기 선택", "사용 가능한 Android 기기를 선택해 주세요.")
+            return
+        destination = self._screenshot_path()
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.critical(
+                self,
+                "화면 캡처 실패",
+                f"screenshot 디렉토리를 생성하지 못했습니다.\n{exc}",
+            )
+            return
+        self._screenshot_in_progress = True
+        self._update_controls()
+        self._run_file_command(
+            build_screenshot_arguments(),
+            destination,
+            stdout_to_file=True,
+            label="화면 캡처",
+        )
+
     def _run_file_command(self, arguments: list[str], destination: Path, stdout_to_file: bool, label: str) -> None:
         """선택 기기용 ADB 파일 명령을 백그라운드에서 실행한다.
 
@@ -769,6 +817,9 @@ class MainWindow(QMainWindow):
             path (str): 생성된 결과 파일 경로.
         """
         self._active_workers.discard(worker)
+        if label == "화면 캡처":
+            self._screenshot_in_progress = False
+            self._update_controls()
         self.statusBar().showMessage(f"{label} 저장 완료: {path}", 8000)
         QMessageBox.information(self, "저장 완료", f"{label} 파일을 저장했습니다.\n{path}")
 
@@ -781,6 +832,9 @@ class MainWindow(QMainWindow):
             error (str): 작업 스레드가 전달한 오류 메시지.
         """
         self._active_workers.discard(worker)
+        if label == "화면 캡처":
+            self._screenshot_in_progress = False
+            self._update_controls()
         self.statusBar().showMessage(f"{label} 저장 실패", 6000)
         QMessageBox.critical(self, f"{label} 실패", error)
 
@@ -809,6 +863,7 @@ class MainWindow(QMainWindow):
         self.dumpsys_button.setEnabled(ready)
         self.bugreport_button.setEnabled(ready)
         self.save_button.setEnabled(ready)
+        self.screenshot_button.setEnabled(ready and not self._screenshot_in_progress)
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - Qt API 명명 규칙
         """자식 logcat 프로세스를 종료하고 창 닫기 이벤트를 승인한다.

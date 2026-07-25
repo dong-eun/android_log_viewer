@@ -1,6 +1,8 @@
 # -*- mode: python ; coding: utf-8 -*-
 import sys
 
+windows_icon = "assets/app_icon.ico" if sys.platform == "win32" else None
+
 a = Analysis(
     ["main.py"],
     pathex=[],
@@ -25,7 +27,13 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
+    icon=windows_icon,
 )
 coll = COLLECT(exe, a.binaries, a.datas, strip=False, upx=True, name="AndroidLogViewer")
 if sys.platform == "darwin":
-    app = BUNDLE(coll, name="AndroidLogViewer.app", icon=None, bundle_identifier="com.androidlogviewer.desktop")
+    app = BUNDLE(
+        coll,
+        name="AndroidLogViewer.app",
+        icon="assets/app_icon.icns",
+        bundle_identifier="com.androidlogviewer.desktop",
+    )

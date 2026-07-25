@@ -14,6 +14,8 @@ Python 3.12와 PySide6로 만든 macOS/Windows용 Android logcat 데스크톱 �
 - 화면 로그 지우기 시 앱 내부 로그 메모리도 함께 해제(기기 logcat 버퍼는 유지)
 - 화면 내용과 무관하게 기기의 전체 logcat 버퍼를 `YYYYMMDDhhmm_기기명.txt`로 저장
 - 선택한 기기의 `dumpsys` TXT 및 `bugreport` ZIP 저장
+- 연결 기기 화면을 `screenshot/YYYYMMDDhhmmss_기기명.png`로 즉시 저장
+- macOS APP과 Windows EXE에 Android Log Viewer 전용 아이콘 적용
 - 화면 출력을 50ms 간격의 최대 250줄 배치로 처리하여 UI 갱신 부하 감소
 - 로그 최대 5,000줄을 기본으로 유지하며 1,000/5,000/10,000/20,000줄 중 선택 가능
 - 선택한 최대 노출 줄을 초과하면 전체 화면을 새로고침하지 않고 가장 오래된 로그부터 제거
@@ -54,6 +56,12 @@ python -m pip install -e '.[dev]'
 pytest
 ```
 
+앱 아이콘 원본을 변경한 경우 플랫폼별 아이콘을 다시 생성합니다.
+
+```bash
+python scripts/build_icons.py
+```
+
 ## 배포 파일 만들기
 
 PyInstaller 결과물은 빌드한 운영체제용으로만 생성됩니다. 따라서 macOS 앱은 macOS에서, Windows EXE는 Windows에서 각각 빌드해야 합니다.
@@ -70,7 +78,7 @@ ADB는 앱에 포함하지 않습니다. 각 사용자의 Android SDK Platform-T
 
 ### GitHub Actions에서 Windows 배포 파일 만들기
 
-GitHub 저장소의 **Actions > Build Windows executable > Run workflow**에서 수동으로 실행할 수 있습니다. `v`로 시작하는 태그(예: `v0.1.0`)를 푸시해도 자동으로 실행됩니다.
+`main` 브랜치에 변경이 반영되면 Windows 빌드가 자동으로 실행됩니다. GitHub 저장소의 **Actions > Build Windows executable > Run workflow**에서 수동으로 실행하거나 `v`로 시작하는 태그(예: `v0.1.0`)를 푸시해도 실행됩니다.
 
 빌드가 완료되면 workflow 실행 화면의 **Artifacts**에서 `AndroidLogViewer-windows-x64`를 내려받습니다. 아티팩트 안의 `AndroidLogViewer-windows-x64.zip`을 압축 해제한 뒤 `AndroidLogViewer/AndroidLogViewer.exe`를 실행합니다. 같은 폴더의 DLL과 Qt 파일이 필요하므로 EXE만 따로 이동하지 마세요.
 
@@ -91,5 +99,9 @@ GitHub 저장소의 **Actions > Build Windows executable > Run workflow**에서 
    - 다시 최하단으로 이동하면 자동 로그 추적이 재개됩니다.
 5. **기기 전체 로그 저장**은 화면의 필터, 화면 지우기 및 로그 시작 시점과 관계없이 저장 버튼을 누른 시점의 기기 전체 logcat 버퍼를 UTF-8 TXT로 저장합니다. 로그를 읽기만 하며 기기 버퍼는 삭제하지 않습니다.
 6. **dumpsys 저장**, **bugreport 저장**은 백그라운드에서 수행되며 완료 시 알림을 표시합니다.
+7. **화면 캡처**는 연결된 기기의 현재 화면을 PNG로 저장합니다.
+   - Windows: `AndroidLogViewer.exe`가 있는 디렉토리의 `screenshot` 폴더
+   - macOS: `AndroidLogViewer.app`이 있는 디렉토리의 `screenshot` 폴더
+   - 파일명: `YYYYMMDDhhmmss_기기명.png`
 
 Device와 Filter 사이의 **최대 노출 로그**에서 앱이 메모리와 화면에 유지할 줄 수를 선택할 수 있습니다. 선택한 줄 수를 초과하면 가장 오래된 화면 로그가 사라지고 새 로그가 이어서 표시됩니다. Windows에서 장시간 실행할 때는 기본값 5,000줄 또는 1,000줄을 권장합니다. 이 설정은 기기의 실제 logcat 버퍼와 전체 로그 저장 범위에는 영향을 주지 않습니다.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+from datetime import datetime
 import os
 from unittest.mock import patch
 
@@ -203,5 +204,49 @@ def test_process_query_does_not_start_while_previous_query_is_running() -> None:
 
         assert len(commands) == 1
         assert window._process_query_in_flight
+    finally:
+        window.close()
+
+
+def test_screenshot_path_uses_timestamp_and_safe_device_name(tmp_path) -> None:
+    """화면 캡처 경로가 지정 형식의 시각과 안전한 기기명으로 생성되는지 검증한다."""
+    window = _create_window()
+    try:
+        device = AndroidDevice(serial="device-1", state="device", model="Pixel 9 Pro")
+        window._selected_device = lambda: device  # type: ignore[method-assign]
+        captured_at = datetime(2026, 7, 25, 14, 30, 45)
+
+        with patch("android_log_viewer.main_window.screenshot_directory", return_value=tmp_path / "screenshot"):
+            path = window._screenshot_path(captured_at)
+
+        assert path == tmp_path / "screenshot" / "20260725143045_Pixel_9_Pro.png"
+    finally:
+        window.close()
+
+
+def test_capture_screen_creates_directory_and_starts_adb_file_command(tmp_path) -> None:
+    """화면 캡처가 저장 디렉토리를 만들고 PNG 스트리밍 명령을 시작하는지 검증한다."""
+    window = _create_window()
+    try:
+        device = AndroidDevice(serial="device-1", state="device", model="Pixel")
+        destination = tmp_path / "screenshot" / "20260725143045_Pixel.png"
+        window._adb_path = "adb"
+        window._selected_device = lambda: device  # type: ignore[method-assign]
+
+        with (
+            patch.object(window, "_screenshot_path", return_value=destination),
+            patch.object(window, "_run_file_command") as run_file_command,
+        ):
+            window.capture_screen()
+
+        assert destination.parent.is_dir()
+        run_file_command.assert_called_once_with(
+            ["exec-out", "screencap", "-p"],
+            destination,
+            stdout_to_file=True,
+            label="화면 캡처",
+        )
+        assert window._screenshot_in_progress
+        assert not window.screenshot_button.isEnabled()
     finally:
         window.close()
