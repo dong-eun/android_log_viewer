@@ -199,7 +199,7 @@ class MainWindow(QMainWindow):
         self.screenshot_button.clicked.connect(self.capture_screen)
         action_row.addWidget(self.screenshot_button)
         action_row.addStretch()
-        self.count_label = QLabel("0 lines")
+        self.count_label = QLabel("필터 결과 0 / 전체 0 · 최대 5,000")
         action_row.addWidget(self.count_label)
         layout.addLayout(action_row)
 
@@ -346,8 +346,10 @@ class MainWindow(QMainWindow):
         for line in lines:
             self._store_log_entry(parse_logcat_line(line.rstrip("\r")))
         if (
-            self._pending_display or self._pending_display_removals
-        ) and not self._display_timer.isActive():
+            self._follow_tail
+            and (self._pending_display or self._pending_display_removals)
+            and not self._display_timer.isActive()
+        ):
             self._display_timer.start()
         self._update_count()
 
@@ -426,7 +428,13 @@ class MainWindow(QMainWindow):
             cursor.deleteChar()
 
     def _flush_display_batch(self) -> None:
-        """대기 중인 로그를 제한된 개수만 꺼내 한 번에 화면에 출력한다."""
+        """최하단 추적 중일 때 대기 로그를 제한된 개수만 화면에 출력한다.
+
+        사용자가 위로 스크롤한 동안에는 화면 문서를 변경하지 않고 출력
+        대기열을 유지한다. 내부 로그 저장은 별도로 계속 수행된다.
+        """
+        if not self._follow_tail:
+            return
         entries: list[LogEntry] = []
         for _ in range(min(DISPLAY_BATCH_SIZE, len(self._pending_display))):
             entries.append(self._pending_display.popleft())
@@ -445,7 +453,15 @@ class MainWindow(QMainWindow):
         if self._scroll_update_guard:
             return
         scrollbar = self.log_view.verticalScrollBar()
+        was_following = self._follow_tail
         self._follow_tail = value >= scrollbar.maximum() - 1
+        if (
+            self._follow_tail
+            and not was_following
+            and (self._pending_display or self._pending_display_removals)
+            and not self._display_timer.isActive()
+        ):
+            self._display_timer.start()
 
     def _matches_filter(self, entry: LogEntry) -> bool:
         """미리 계산한 필터 조건을 로그 한 줄에 적용한다.
@@ -704,8 +720,10 @@ class MainWindow(QMainWindow):
             self._render_all_logs()
 
     def _update_count(self) -> None:
-        """화면에 표시된 로그 수와 앱이 수집한 전체 로그 수를 갱신한다."""
-        self.count_label.setText(f"{self._visible_count:,} / {len(self._logs):,} lines")
+        """필터 결과, 전체 보관 로그 수와 최대 보관 줄 수를 갱신한다."""
+        self.count_label.setText(
+            f"필터 결과 {self._visible_count:,} / 전체 {len(self._logs):,} · 최대 {self._max_log_lines:,}"
+        )
 
     def _default_name(self, extension: str) -> str:
         """현재 시각과 기기 모델을 조합해 기본 파일명을 만든다.

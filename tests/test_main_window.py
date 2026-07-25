@@ -74,6 +74,20 @@ def test_clear_screen_releases_internal_log_memory() -> None:
         window.close()
 
 
+def test_count_label_shows_filtered_total_and_max_lines() -> None:
+    """카운트 라벨이 필터 결과, 전체 로그 수와 최대 보관 줄 수를 함께 보여주는지 검증한다."""
+    window = _create_window()
+    try:
+        window._visible_count = 12
+        window._logs.extend(LogEntry(raw=f"line {index}") for index in range(251))
+
+        window._update_count()
+
+        assert window.count_label.text() == "필터 결과 12 / 전체 251 · 최대 5,000"
+    finally:
+        window.close()
+
+
 def test_cached_filter_reuses_terms_level_and_package_pids() -> None:
     """캐시된 필터가 AND 검색어, 레벨과 패키지 PID를 모두 적용하는지 검증한다."""
     window = _create_window()
@@ -105,6 +119,37 @@ def test_display_queue_is_flushed_in_bounded_batches() -> None:
 
         assert len(window._pending_display) == 10
         assert len(window.log_view.toPlainText().splitlines()) == DISPLAY_BATCH_SIZE
+    finally:
+        window.close()
+
+
+def test_scrolling_away_freezes_view_until_returning_to_bottom() -> None:
+    """스크롤 중 화면을 고정하고 최하단 복귀 시 누적 로그 출력을 재개하는지 검증한다."""
+    window = _create_window()
+    try:
+        window._store_log_entry(LogEntry(raw="기존 화면 로그"))
+        window._flush_display_batch()
+        frozen_text = window.log_view.toPlainText()
+
+        window._follow_tail = False
+        window._store_log_entry(LogEntry(raw="스크롤 중 수신 로그"))
+        window._flush_display_batch()
+
+        assert window.log_view.toPlainText() == frozen_text
+        assert [entry.raw for entry in window._logs] == ["기존 화면 로그", "스크롤 중 수신 로그"]
+        assert [entry.raw for entry in window._pending_display] == ["스크롤 중 수신 로그"]
+
+        scrollbar = window.log_view.verticalScrollBar()
+        window._scroll_value_changed(scrollbar.maximum())
+
+        assert window._follow_tail
+        assert window._display_timer.isActive()
+
+        window._display_timer.stop()
+        window._flush_display_batch()
+
+        assert window.log_view.toPlainText().splitlines() == ["기존 화면 로그", "스크롤 중 수신 로그"]
+        assert not window._pending_display
     finally:
         window.close()
 
