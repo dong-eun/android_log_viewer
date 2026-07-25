@@ -1,6 +1,7 @@
 from android_log_viewer.adb import (
     build_logcat_arguments,
     build_logcat_dump_arguments,
+    build_screenshot_arguments,
     parse_devices,
     parse_packages,
     parse_processes,
@@ -68,3 +69,8 @@ def test_build_logcat_dump_arguments_reads_all_buffers_without_clearing() -> Non
     assert arguments == ["logcat", "-b", "all", "-d", "-v", "threadtime"]
     assert "-c" not in arguments
     assert "-T" not in arguments
+
+
+def test_build_screenshot_arguments_streams_png_from_device() -> None:
+    """화면 캡처 인수가 기기 PNG 출력을 직접 전달하도록 구성되는지 검증한다."""
+    assert build_screenshot_arguments() == ["exec-out", "screencap", "-p"]

@@ -230,3 +230,12 @@ def build_logcat_dump_arguments() -> list[str]:
         list[str]: 기기 선택 인수 뒤에 전달할 logcat 명령 인수 목록.
     """
     return ["logcat", "-b", "all", "-d", "-v", "threadtime"]
+
+
+def build_screenshot_arguments() -> list[str]:
+    """기기 화면을 PNG 표준 출력으로 캡처하는 ADB 인수를 구성한다.
+
+    Returns:
+        list[str]: 기기 선택 인수 뒤에 전달할 화면 캡처 명령 인수 목록.
+    """
+    return ["exec-out", "screencap", "-p"]
