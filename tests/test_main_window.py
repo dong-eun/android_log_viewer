@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from collections import deque
 import os
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
 
 from android_log_viewer.adb import AndroidDevice
-from android_log_viewer.log_parser import LogEntry
+from android_log_viewer.log_parser import LogEntry, LogFilter
 from android_log_viewer.main_window import DEFAULT_MAX_LOG_LINES, DISPLAY_BATCH_SIZE, MainWindow
 
 
@@ -26,14 +28,28 @@ def test_default_and_selected_max_log_lines_are_applied() -> None:
     window = _create_window()
     try:
         assert window._logs.maxlen == DEFAULT_MAX_LOG_LINES
-        assert window.log_view.maximumBlockCount() == DEFAULT_MAX_LOG_LINES
+        assert window.log_view.maximumBlockCount() == 0
 
         index = window.max_lines_combo.findData(1_000)
         window.max_lines_combo.setCurrentIndex(index)
 
         assert window._logs.maxlen == 1_000
         assert window._pending_display.maxlen == 1_000
-        assert window.log_view.maximumBlockCount() == 1_000
+        assert window.log_view.maximumBlockCount() == 0
+    finally:
+        window.close()
+
+
+def test_max_log_control_is_between_device_and_filter_rows() -> None:
+    """최대 노출 로그 설정이 Device 행과 Filter 행 사이에 배치되는지 검증한다."""
+    window = _create_window()
+    try:
+        root_layout = window.centralWidget().layout()
+        limit_layout = root_layout.itemAt(1).layout()
+        filter_layout = root_layout.itemAt(2).layout()
+
+        assert limit_layout.itemAt(0).widget().text() == "최대 노출 로그"
+        assert filter_layout.itemAt(0).widget().text() == "Filter"
     finally:
         window.close()
 
@@ -92,6 +108,67 @@ def test_display_queue_is_flushed_in_bounded_batches() -> None:
         window.close()
 
 
+def test_log_limit_overflow_replaces_oldest_line_without_full_render() -> None:
+    """최대 줄 초과 시 전체 렌더링 없이 가장 오래된 줄만 새 로그로 교체하는지 검증한다."""
+    window = _create_window()
+    try:
+        window._max_log_lines = 3
+        window._logs = deque(maxlen=3)
+        window._pending_display = deque(maxlen=3)
+        for index in range(3):
+            window._store_log_entry(LogEntry(raw=f"line {index}"))
+        window._flush_display_batch()
+
+        with patch.object(window, "_render_all_logs", side_effect=AssertionError("전체 렌더링 호출")):
+            window._store_log_entry(LogEntry(raw="line 3"))
+            window._flush_display_batch()
+
+        assert window.log_view.toPlainText().splitlines() == ["line 1", "line 2", "line 3"]
+        assert [entry.raw for entry in window._logs] == ["line 1", "line 2", "line 3"]
+        assert window._visible_count == 3
+    finally:
+        window.close()
+
+
+def test_filtered_eviction_removes_stale_display_line_without_new_match() -> None:
+    """오래된 일치 로그가 밀려날 때 새 로그가 불일치해도 화면의 잔여 줄을 제거하는지 검증한다."""
+    window = _create_window()
+    try:
+        window._max_log_lines = 3
+        window._logs = deque(maxlen=3)
+        window._pending_display = deque(maxlen=3)
+        window._cached_filter = LogFilter(terms=("keep",))
+        for index in range(3):
+            window._store_log_entry(LogEntry(raw=f"keep {index}"))
+        window._flush_display_batch()
+
+        window._store_log_entry(LogEntry(raw="drop 3"))
+        window._flush_display_batch()
+
+        assert window.log_view.toPlainText().splitlines() == ["keep 1", "keep 2"]
+        assert window._visible_count == 2
+    finally:
+        window.close()
+
+
+def test_unrendered_overflow_keeps_only_newest_pending_lines() -> None:
+    """화면 출력 전 한도를 초과해도 대기열에는 최신 로그만 남는지 검증한다."""
+    window = _create_window()
+    try:
+        window._max_log_lines = 3
+        window._logs = deque(maxlen=3)
+        window._pending_display = deque(maxlen=3)
+        for index in range(4):
+            window._store_log_entry(LogEntry(raw=f"line {index}"))
+
+        window._flush_display_batch()
+
+        assert window.log_view.toPlainText().splitlines() == ["line 1", "line 2", "line 3"]
+        assert window._pending_display_removals == 0
+    finally:
+        window.close()
+
+
 def test_internal_log_queues_stay_bounded_during_large_burst() -> None:
     """대량 로그가 한꺼번에 들어와도 앱 내부 저장소와 출력 대기열이 설정값을 넘지 않는지 검증한다."""
     window = _create_window()
@@ -101,12 +178,12 @@ def test_internal_log_queues_stay_bounded_during_large_burst() -> None:
         entries = (LogEntry(raw=f"line {line_number}") for line_number in range(100_000))
 
         for entry in entries:
-            window._logs.append(entry)
-            window._pending_display.append(entry)
+            window._store_log_entry(entry)
 
         assert len(window._logs) == 1_000
         assert len(window._pending_display) == 1_000
         assert window._logs[0].raw == "line 99000"
+        assert window._visible_count == 1_000
     finally:
         window.close()
 

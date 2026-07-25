@@ -70,6 +70,7 @@ class MainWindow(QMainWindow):
         self._max_log_lines = DEFAULT_MAX_LOG_LINES
         self._logs: deque[LogEntry] = deque(maxlen=self._max_log_lines)
         self._pending_display: deque[LogEntry] = deque(maxlen=self._max_log_lines)
+        self._pending_display_removals = 0
         self._visible_count = 0
         self._session_serial = ""
         self._packages: list[str] = []
@@ -131,6 +132,21 @@ class MainWindow(QMainWindow):
         device_row.addWidget(self.clear_button)
         layout.addLayout(device_row)
 
+        limit_row = QHBoxLayout()
+        limit_row.addWidget(QLabel("최대 노출 로그"))
+        self.max_lines_combo = QComboBox()
+        for line_count in MAX_LOG_LINE_OPTIONS:
+            self.max_lines_combo.addItem(f"{line_count:,}줄", line_count)
+        self.max_lines_combo.setCurrentIndex(MAX_LOG_LINE_OPTIONS.index(DEFAULT_MAX_LOG_LINES))
+        self.max_lines_combo.currentIndexChanged.connect(self._max_log_lines_changed)
+        self.max_lines_combo.setToolTip("앱 메모리와 화면에 유지할 최대 로그 줄 수입니다.")
+        limit_row.addWidget(self.max_lines_combo)
+        limit_description = QLabel("한도 초과 시 가장 오래된 로그를 제거하고 새 로그를 표시합니다.")
+        limit_description.setStyleSheet("color: #9CA3AF;")
+        limit_row.addWidget(limit_description)
+        limit_row.addStretch()
+        layout.addLayout(limit_row)
+
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Filter"))
         self.filter_input = QLineEdit()
@@ -152,20 +168,13 @@ class MainWindow(QMainWindow):
             self.level_combo.addItem(label, value)
         self.level_combo.currentIndexChanged.connect(self._filter_option_changed)
         filter_row.addWidget(self.level_combo)
-        filter_row.addWidget(QLabel("최대 로그"))
-        self.max_lines_combo = QComboBox()
-        for line_count in MAX_LOG_LINE_OPTIONS:
-            self.max_lines_combo.addItem(f"{line_count:,}줄", line_count)
-        self.max_lines_combo.setCurrentIndex(MAX_LOG_LINE_OPTIONS.index(DEFAULT_MAX_LOG_LINES))
-        self.max_lines_combo.currentIndexChanged.connect(self._max_log_lines_changed)
-        self.max_lines_combo.setToolTip("앱 메모리와 화면에 유지할 최대 로그 줄 수입니다.")
-        filter_row.addWidget(self.max_lines_combo)
         layout.addLayout(filter_row)
 
         self.log_view = QPlainTextEdit()
         self.log_view.setReadOnly(True)
         self.log_view.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
-        self.log_view.setMaximumBlockCount(self._max_log_lines)
+        # 최대 줄 초과 처리는 메모리 로그의 제거 순서와 맞추기 위해 직접 수행한다.
+        self.log_view.setMaximumBlockCount(0)
         fixed_font = QFontDatabase.systemFont(QFontDatabase.SystemFont.FixedFont)
         fixed_font.setPointSize(11)
         self.log_view.setFont(fixed_font)
@@ -328,44 +337,63 @@ class MainWindow(QMainWindow):
         lines = self._read_buffer.split("\n")
         self._read_buffer = lines.pop()
         for line in lines:
-            entry = parse_logcat_line(line.rstrip("\r"))
-            if (
-                not self._filter_render_pending
-                and len(self._logs) == self._logs.maxlen
-                and self._matches_filter(self._logs[0])
-            ):
-                self._visible_count -= 1
-            self._logs.append(entry)
-            if not self._filter_render_pending and self._matches_filter(entry):
-                self._visible_count += 1
-                self._pending_display.append(entry)
-        if self._pending_display and not self._display_timer.isActive():
+            self._store_log_entry(parse_logcat_line(line.rstrip("\r")))
+        if (
+            self._pending_display or self._pending_display_removals
+        ) and not self._display_timer.isActive():
             self._display_timer.start()
         self._update_count()
 
-    def _append_entries(self, entries: list[LogEntry]) -> None:
-        """여러 로그를 하나의 화면 갱신 단위로 문서 끝에 추가한다.
+    def _store_log_entry(self, entry: LogEntry) -> None:
+        """로그를 제한된 메모리에 저장하고 화면 변경 대기열을 갱신한다.
+
+        Args:
+            entry (LogEntry): 새로 수신한 로그 항목.
+        """
+        evicted_entry = self._logs[0] if len(self._logs) == self._logs.maxlen else None
+        if (
+            evicted_entry is not None
+            and not self._filter_render_pending
+            and self._matches_filter(evicted_entry)
+        ):
+            self._visible_count -= 1
+            if self._pending_display and self._pending_display[0] is evicted_entry:
+                self._pending_display.popleft()
+            else:
+                self._pending_display_removals += 1
+        self._logs.append(entry)
+        if not self._filter_render_pending and self._matches_filter(entry):
+            self._visible_count += 1
+            self._pending_display.append(entry)
+
+    def _append_entries(self, entries: list[LogEntry], remove_oldest: int = 0) -> None:
+        """오래된 화면 로그를 제거하고 새 로그를 하나의 갱신 단위로 추가한다.
 
         Args:
             entries (list[LogEntry]): 수신 순서대로 화면에 추가할 로그 항목 목록.
+            remove_oldest (int, optional): 화면 앞에서 제거할 로그 줄 수. 기본값은 ``0``이다.
         """
-        if not entries:
+        if not entries and remove_oldest <= 0:
             return
         scrollbar = self.log_view.verticalScrollBar()
         old_value = scrollbar.value()
         follow_tail = self._follow_tail
-        cursor = QTextCursor(self.log_view.document())
-        cursor.movePosition(QTextCursor.MoveOperation.End)
+        document = self.log_view.document()
+        cursor = QTextCursor(document)
         formats: dict[str, QTextCharFormat] = {}
         self._scroll_update_guard = True
         self.log_view.setUpdatesEnabled(False)
         try:
+            self._remove_oldest_display_lines(remove_oldest)
+            cursor.movePosition(QTextCursor.MoveOperation.End)
             for entry in entries:
                 if entry.level not in formats:
                     text_format = QTextCharFormat()
                     text_format.setForeground(QColor(LEVEL_COLORS.get(entry.level, LEVEL_COLORS["?"])))
                     formats[entry.level] = text_format
                 cursor.insertText(entry.raw + "\n", formats[entry.level])
+            overflow = max(0, document.blockCount() - 1 - self._max_log_lines)
+            self._remove_oldest_display_lines(overflow)
             if follow_tail:
                 scrollbar.setValue(scrollbar.maximum())
             else:
@@ -375,13 +403,30 @@ class MainWindow(QMainWindow):
             self._scroll_update_guard = False
         self._follow_tail = follow_tail
 
+    def _remove_oldest_display_lines(self, count: int) -> None:
+        """화면을 다시 그리지 않고 문서 앞의 오래된 로그 줄을 제거한다.
+
+        Args:
+            count (int): 제거할 최대 로그 줄 수.
+        """
+        document = self.log_view.document()
+        removable_count = min(max(0, count), max(0, document.blockCount() - 1))
+        cursor = QTextCursor(document)
+        for _ in range(removable_count):
+            cursor.movePosition(QTextCursor.MoveOperation.Start)
+            cursor.select(QTextCursor.SelectionType.BlockUnderCursor)
+            cursor.removeSelectedText()
+            cursor.deleteChar()
+
     def _flush_display_batch(self) -> None:
         """대기 중인 로그를 제한된 개수만 꺼내 한 번에 화면에 출력한다."""
         entries: list[LogEntry] = []
         for _ in range(min(DISPLAY_BATCH_SIZE, len(self._pending_display))):
             entries.append(self._pending_display.popleft())
-        self._append_entries(entries)
-        if self._pending_display:
+        remove_oldest = self._pending_display_removals
+        self._pending_display_removals = 0
+        self._append_entries(entries, remove_oldest)
+        if self._pending_display or self._pending_display_removals:
             self._display_timer.start()
 
     def _scroll_value_changed(self, value: int) -> None:
@@ -430,6 +475,7 @@ class MainWindow(QMainWindow):
         self._filter_render_pending = False
         self._display_timer.stop()
         self._pending_display.clear()
+        self._pending_display_removals = 0
         scrollbar = self.log_view.verticalScrollBar()
         old_value = scrollbar.value()
         follow_tail = self._follow_tail
@@ -454,6 +500,7 @@ class MainWindow(QMainWindow):
         """앱이 수집한 화면용 로그와 출력 대기열을 비워 메모리를 해제한다."""
         self._display_timer.stop()
         self._pending_display.clear()
+        self._pending_display_removals = 0
         self._logs.clear()
         self._visible_count = 0
         self._scroll_update_guard = True
@@ -469,6 +516,7 @@ class MainWindow(QMainWindow):
         """기기를 변경할 때 새로운 메모리 로그 세션을 시작한다."""
         self._display_timer.stop()
         self._pending_display.clear()
+        self._pending_display_removals = 0
         self._logs.clear()
         self._visible_count = 0
         self._scroll_update_guard = True
@@ -502,6 +550,7 @@ class MainWindow(QMainWindow):
         self._filter_render_pending = True
         self._display_timer.stop()
         self._pending_display.clear()
+        self._pending_display_removals = 0
         self._filter_timer.start()
 
     def _max_log_lines_changed(self) -> None:
@@ -512,7 +561,7 @@ class MainWindow(QMainWindow):
         self._max_log_lines = maximum
         self._logs = deque(self._logs, maxlen=maximum)
         self._pending_display = deque(maxlen=maximum)
-        self.log_view.setMaximumBlockCount(maximum)
+        self._pending_display_removals = 0
         self._render_all_logs()
         self.statusBar().showMessage(f"최대 로그를 {maximum:,}줄로 변경했습니다.", 4000)
 
