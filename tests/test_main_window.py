@@ -74,6 +74,20 @@ def test_clear_screen_releases_internal_log_memory() -> None:
         window.close()
 
 
+def test_count_label_shows_filtered_total_and_max_lines() -> None:
+    """카운트 라벨이 필터 결과, 전체 로그 수와 최대 보관 줄 수를 함께 보여주는지 검증한다."""
+    window = _create_window()
+    try:
+        window._visible_count = 12
+        window._logs.extend(LogEntry(raw=f"line {index}") for index in range(251))
+
+        window._update_count()
+
+        assert window.count_label.text() == "필터 결과 12 / 전체 251 · 최대 5,000"
+    finally:
+        window.close()
+
+
 def test_cached_filter_reuses_terms_level_and_package_pids() -> None:
     """캐시된 필터가 AND 검색어, 레벨과 패키지 PID를 모두 적용하는지 검증한다."""
     window = _create_window()

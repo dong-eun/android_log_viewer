@@ -199,7 +199,7 @@ class MainWindow(QMainWindow):
         self.screenshot_button.clicked.connect(self.capture_screen)
         action_row.addWidget(self.screenshot_button)
         action_row.addStretch()
-        self.count_label = QLabel("0 lines")
+        self.count_label = QLabel("필터 결과 0 / 전체 0 · 최대 5,000")
         action_row.addWidget(self.count_label)
         layout.addLayout(action_row)
 
@@ -720,8 +720,10 @@ class MainWindow(QMainWindow):
             self._render_all_logs()
 
     def _update_count(self) -> None:
-        """화면에 표시된 로그 수와 앱이 수집한 전체 로그 수를 갱신한다."""
-        self.count_label.setText(f"{self._visible_count:,} / {len(self._logs):,} lines")
+        """필터 결과, 전체 보관 로그 수와 최대 보관 줄 수를 갱신한다."""
+        self.count_label.setText(
+            f"필터 결과 {self._visible_count:,} / 전체 {len(self._logs):,} · 최대 {self._max_log_lines:,}"
+        )
 
     def _default_name(self, extension: str) -> str:
         """현재 시각과 기기 모델을 조합해 기본 파일명을 만든다.
