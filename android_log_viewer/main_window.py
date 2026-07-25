@@ -346,8 +346,10 @@ class MainWindow(QMainWindow):
         for line in lines:
             self._store_log_entry(parse_logcat_line(line.rstrip("\r")))
         if (
-            self._pending_display or self._pending_display_removals
-        ) and not self._display_timer.isActive():
+            self._follow_tail
+            and (self._pending_display or self._pending_display_removals)
+            and not self._display_timer.isActive()
+        ):
             self._display_timer.start()
         self._update_count()
 
@@ -426,7 +428,13 @@ class MainWindow(QMainWindow):
             cursor.deleteChar()
 
     def _flush_display_batch(self) -> None:
-        """대기 중인 로그를 제한된 개수만 꺼내 한 번에 화면에 출력한다."""
+        """최하단 추적 중일 때 대기 로그를 제한된 개수만 화면에 출력한다.
+
+        사용자가 위로 스크롤한 동안에는 화면 문서를 변경하지 않고 출력
+        대기열을 유지한다. 내부 로그 저장은 별도로 계속 수행된다.
+        """
+        if not self._follow_tail:
+            return
         entries: list[LogEntry] = []
         for _ in range(min(DISPLAY_BATCH_SIZE, len(self._pending_display))):
             entries.append(self._pending_display.popleft())
@@ -445,7 +453,15 @@ class MainWindow(QMainWindow):
         if self._scroll_update_guard:
             return
         scrollbar = self.log_view.verticalScrollBar()
+        was_following = self._follow_tail
         self._follow_tail = value >= scrollbar.maximum() - 1
+        if (
+            self._follow_tail
+            and not was_following
+            and (self._pending_display or self._pending_display_removals)
+            and not self._display_timer.isActive()
+        ):
+            self._display_timer.start()
 
     def _matches_filter(self, entry: LogEntry) -> bool:
         """미리 계산한 필터 조건을 로그 한 줄에 적용한다.

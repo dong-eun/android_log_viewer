@@ -109,6 +109,37 @@ def test_display_queue_is_flushed_in_bounded_batches() -> None:
         window.close()
 
 
+def test_scrolling_away_freezes_view_until_returning_to_bottom() -> None:
+    """스크롤 중 화면을 고정하고 최하단 복귀 시 누적 로그 출력을 재개하는지 검증한다."""
+    window = _create_window()
+    try:
+        window._store_log_entry(LogEntry(raw="기존 화면 로그"))
+        window._flush_display_batch()
+        frozen_text = window.log_view.toPlainText()
+
+        window._follow_tail = False
+        window._store_log_entry(LogEntry(raw="스크롤 중 수신 로그"))
+        window._flush_display_batch()
+
+        assert window.log_view.toPlainText() == frozen_text
+        assert [entry.raw for entry in window._logs] == ["기존 화면 로그", "스크롤 중 수신 로그"]
+        assert [entry.raw for entry in window._pending_display] == ["스크롤 중 수신 로그"]
+
+        scrollbar = window.log_view.verticalScrollBar()
+        window._scroll_value_changed(scrollbar.maximum())
+
+        assert window._follow_tail
+        assert window._display_timer.isActive()
+
+        window._display_timer.stop()
+        window._flush_display_batch()
+
+        assert window.log_view.toPlainText().splitlines() == ["기존 화면 로그", "스크롤 중 수신 로그"]
+        assert not window._pending_display
+    finally:
+        window.close()
+
+
 def test_log_limit_overflow_replaces_oldest_line_without_full_render() -> None:
     """최대 줄 초과 시 전체 렌더링 없이 가장 오래된 줄만 새 로그로 교체하는지 검증한다."""
     window = _create_window()
