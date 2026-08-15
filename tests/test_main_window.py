@@ -108,6 +108,26 @@ def test_cached_filter_reuses_terms_level_and_package_pids() -> None:
         window.close()
 
 
+def test_package_filter_can_be_combined_with_explicit_and_operator() -> None:
+    """패키지 필터와 명시적 AND 연산자를 함께 사용할 수 있는지 검증한다."""
+    window = _create_window()
+    try:
+        window._package_pids = {"com.example.app": {"1234"}}
+        window.filter_input.setText("package:com.example & ERROR")
+        window._cache_filter()
+
+        matching = LogEntry(raw="E App: ERROR", level="E", pid="1234")
+        wrong_text = LogEntry(raw="E App: WARNING", level="E", pid="1234")
+        wrong_pid = LogEntry(raw="E App: ERROR", level="E", pid="9999")
+
+        assert not window._cached_filter.error_message
+        assert window._matches_filter(matching)
+        assert not window._matches_filter(wrong_text)
+        assert not window._matches_filter(wrong_pid)
+    finally:
+        window.close()
+
+
 def test_display_queue_is_flushed_in_bounded_batches() -> None:
     """대기 로그가 한 번에 지정된 최대 배치 크기만큼만 출력되는지 검증한다."""
     window = _create_window()
