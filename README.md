@@ -6,8 +6,8 @@ Python 3.12와 PySide6로 만든 macOS/Windows용 Android logcat 데스크톱 �
 
 - 연결된 Android 기기 조회, 선택 및 새로고침
 - 로그 시작 버튼을 누른 시점 이후의 logcat만 실시간 표시(기기 버퍼 유지)
-- 텍스트 검색과 로그 레벨(Verbose/Debug/Info/Warn/Error) 필터
-- 공백으로 구분한 여러 검색어의 AND 필터 (`aaa bbb` = `aaa` AND `bbb`)
+- 텍스트 검색, 논리 연산자(`&`, `|`, `!`, `()`)와 로그 레벨(Verbose/Debug/Info/Warn/Error) 필터
+- 공백으로 구분한 여러 검색어의 AND 필터와 `regex:` 정규식 필터
 - `package:` 입력 시 연결 기기에 설치된 패키지 자동완성 및 패키지별 PID 필터
 - Android Studio Logcat과 유사한 레벨별 색상 구분
 - 최하단에서는 새 로그 자동 추적, 사용자가 위로 스크롤하면 화면 갱신을 멈추고 내부 로그만 계속 수집
@@ -78,7 +78,7 @@ ADB는 앱에 포함하지 않습니다. 각 사용자의 Android SDK Platform-T
 
 ### GitHub Actions에서 Windows 배포 파일 만들기
 
-`main` 브랜치에 변경이 반영되면 Windows 빌드가 자동으로 실행됩니다. GitHub 저장소의 **Actions > Build Windows executable > Run workflow**에서 수동으로 실행하거나 `v`로 시작하는 태그(예: `v0.1.0`)를 푸시해도 실행됩니다.
+Windows 빌드는 GitHub 저장소의 **Actions > Build Windows executable > Run workflow**에서 수동으로 실행하거나 `v`로 시작하는 태그(예: `v0.1.0`)를 푸시해 실행합니다. `main` 브랜치 merge만으로는 자동 실행되지 않습니다.
 
 빌드가 완료되면 workflow 실행 화면의 **Artifacts**에서 `AndroidLogViewer-windows-x64`를 내려받습니다. 아티팩트 안의 `AndroidLogViewer-windows-x64.zip`을 압축 해제한 뒤 `AndroidLogViewer/AndroidLogViewer.exe`를 실행합니다. 같은 폴더의 DLL과 Qt 파일이 필요하므로 EXE만 따로 이동하지 마세요.
 
@@ -92,6 +92,8 @@ ADB는 앱에 포함하지 않습니다. 각 사용자의 Android SDK Platform-T
    - `package:`를 입력하면 설치 패키지 목록이 나타납니다. 예: `package:com.example.app`
    - 패키지의 기본 프로세스와 `com.example.app:worker` 같은 보조 프로세스 로그도 함께 표시됩니다.
    - 검색어를 공백으로 나누면 모든 단어가 포함된 로그만 표시됩니다. 예: `Network timeout`은 `Network`와 `timeout`을 모두 포함한 로그를 찾습니다.
+   - `&`, `|`, `!`, `()`를 사용해 조건을 조합할 수 있습니다. 예: `(ERROR | WARNING) & !Network`
+   - `regex:` 뒤의 문자열은 Python 정규식으로 처리합니다. 예: `regex:user_id=\d+`
    - 공백을 포함한 문장 자체를 찾으려면 큰따옴표를 사용합니다. 예: `Network "request timeout"`
 4. **화면 로그 지우기**는 현재 화면과 앱 내부에 보관한 화면용 로그를 비웁니다. 이후 들어오는 로그는 계속 표시됩니다. Android 기기의 logcat 버퍼를 삭제하는 `adb logcat -c`는 실행하지 않으므로, 지우기 전 로그도 **기기 전체 로그 저장** 대상에 포함됩니다.
    - 로그 최하단을 보고 있을 때는 새 로그를 자동으로 따라갑니다.

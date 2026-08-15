@@ -1,3 +1,5 @@
+import pytest
+
 from android_log_viewer.log_parser import LogFilter, parse_logcat_line, parse_search_terms
 
 
@@ -47,3 +49,54 @@ def test_log_filter_uses_precomputed_casefolded_terms() -> None:
     cached_filter = LogFilter(terms=("network", "timeout"), minimum_level="W", package_pids=frozenset({"1234"}))
 
     assert cached_filter.matches(entry)
+
+
+@pytest.mark.parametrize(
+    ("query", "matching_raw", "wrong_raw"),
+    [
+        ("Network", "E Network: request timeout", "E Database: request timeout"),
+        ("Network timeout", "E Network: request timeout", "E Network: request success"),
+        ("Network & timeout", "E Network: request timeout", "E Network: request success"),
+        ("ERROR | WARNING", "E App: WARNING while running", "I App: Ignoring event"),
+        ("ERROR & !timeout", "E App: ERROR while running", "E App: ERROR timeout"),
+        ("!DEBUG", "I App: INFO message", "D App: DEBUG message"),
+        ("(ERROR | WARNING) & Network", "E Network: WARNING message", "E App: WARNING message"),
+        ("(ERROR | WARNING) & !Network", "E App: ERROR message", "E Network: ERROR message"),
+        ("regex:ERROR.*Network", "E App: ERROR while reading Network", "E App: Network before ERROR"),
+        ("regex:ERROR|WARNING", "E App: WARNING message", "I App: Ignoring event"),
+        ("regex:user_id=\\d+", "I App: user_id=1234", "I App: user_id=guest"),
+    ],
+)
+def test_log_filter_supports_logical_and_regex_queries(
+    query: str,
+    matching_raw: str,
+    wrong_raw: str,
+) -> None:
+    """논리 연산자와 정규식 검색 문법이 요구사항대로 동작하는지 검증한다.
+
+    Args:
+        query: 사용자 입력 필터 검색식.
+        matching_raw: 검색식에 일치해야 하는 로그 원문.
+        wrong_raw: 검색식에 일치하지 않아야 하는 로그 원문.
+    """
+    log_filter = LogFilter.from_query(query)
+
+    assert not log_filter.error_message
+    assert log_filter.matches(parse_logcat_line(f"07-18 10:44:12.123  1234  5678 {matching_raw}"))
+    assert not log_filter.matches(parse_logcat_line(f"07-18 10:44:12.123  1234  5678 {wrong_raw}"))
+
+
+def test_invalid_filter_query_does_not_raise() -> None:
+    """잘못된 필터 검색식이 예외 대신 오류 메시지로 보관되는지 검증한다."""
+    log_filter = LogFilter.from_query("(ERROR | WARNING")
+
+    assert log_filter.error_message == "닫는 괄호가 필요합니다."
+    assert not log_filter.matches(parse_logcat_line("07-18 10:44:12.123  1234  5678 E App: ERROR"))
+
+
+def test_invalid_regex_query_does_not_raise() -> None:
+    """잘못된 정규식 검색식이 예외 대신 오류 메시지로 보관되는지 검증한다."""
+    log_filter = LogFilter.from_query("regex:[")
+
+    assert log_filter.error_message.startswith("Regex 오류:")
+    assert not log_filter.matches(parse_logcat_line("07-18 10:44:12.123  1234  5678 E App: ERROR"))

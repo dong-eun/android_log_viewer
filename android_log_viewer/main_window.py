@@ -37,7 +37,7 @@ from .adb import (
     parse_processes,
     safe_filename,
 )
-from .log_parser import LogEntry, LogFilter, parse_logcat_line, parse_search_terms
+from .log_parser import LogEntry, LogFilter, parse_logcat_line
 from .paths import screenshot_directory
 from .workers import AdbFileCommand, AdbTextCommand
 
@@ -153,7 +153,7 @@ class MainWindow(QMainWindow):
         filter_row = QHBoxLayout()
         filter_row.addWidget(QLabel("Filter"))
         self.filter_input = QLineEdit()
-        self.filter_input.setPlaceholderText("공백은 AND 조건 · 예: package:com.example error timeout")
+        self.filter_input.setPlaceholderText("예: Network timeout · ERROR | WARNING · regex:user_id=\\d+")
         self.filter_input.setClearButtonEnabled(True)
         self._package_model = QStringListModel(self)
         self._package_completer = QCompleter(self._package_model, self)
@@ -486,12 +486,33 @@ class MainWindow(QMainWindow):
                 if package.casefold().startswith(package_prefix):
                     matching_pids.update(pids)
             package_pids = frozenset(matching_pids)
-            query = (query[: package_match.start()] + query[package_match.end() :]).strip()
-        self._cached_filter = LogFilter(
-            terms=tuple(term.casefold() for term in parse_search_terms(query)),
+            query = self._remove_package_filter_token(query, package_match.start(), package_match.end())
+        self._cached_filter = LogFilter.from_query(
+            query,
             minimum_level=str(self.level_combo.currentData() or "V"),
             package_pids=package_pids,
         )
+        if self._cached_filter.error_message:
+            self.statusBar().showMessage(self._cached_filter.error_message, 5000)
+
+    def _remove_package_filter_token(self, query: str, start: int, end: int) -> str:
+        """필터 검색식에서 패키지 토큰과 불필요한 인접 AND 연산자를 제거한다.
+
+        Args:
+            query: 사용자가 입력한 전체 필터 검색식.
+            start: 패키지 토큰 시작 위치.
+            end: 패키지 토큰 종료 위치.
+
+        Returns:
+            패키지 조건을 제외한 필터 검색식.
+        """
+        before = query[:start].rstrip()
+        after = query[end:].lstrip()
+        if before.endswith("&"):
+            before = before[:-1].rstrip()
+        if after.startswith("&"):
+            after = after[1:].lstrip()
+        return f"{before} {after}".strip()
 
     def _render_all_logs(self) -> None:
         """현재 필터로 보존 중인 로그를 다시 그리며 사용자의 스크롤 상태를 유지한다."""
